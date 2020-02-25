@@ -15,6 +15,14 @@ OR
 bindsym exec vmware-user --no-startup-id
 ```
 
+--------------------------
+
+This has been tested on Arch Linux only
+--------------------------
+
+```console
+git clone https://github.com/Kr0ff/VMWare-Guest-FullScreen
+```
 
 
 
