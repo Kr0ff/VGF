@@ -1,5 +1,5 @@
-`To enable automatic screen detection and resizing in vmware in linux machines with i3 window manager, couple of systemd commands
-have to be initiated.` 
+To enable automatic screen detection and resizing in vmware in linux machines with i3 window manager, couple of systemd commands
+have to be initiated.
 
 This will enable and start the services which are installed by "open-vm-tools".
 
