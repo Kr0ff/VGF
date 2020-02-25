@@ -17,7 +17,7 @@ bindsym exec vmware-user --no-startup-id
 
 --------------------------
 
-This has been tested on Arch Linux only
+[!] This has been tested on Arch Linux only
 --------------------------
 
 ```console
