@@ -20,6 +20,9 @@ bindsym exec vmware-user --no-startup-id
 
 ```console
 git clone https://github.com/Kr0ff/VMWare-Guest-FullScreen
+cd VMWare-Guest-FullScreen
+chmod +x enable-fullscreen.sh
+./enable-fullscreen.sh
 ```
 
 
