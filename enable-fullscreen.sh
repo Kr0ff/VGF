@@ -76,7 +76,7 @@ function start_services {
 	sleep 1.5
 	printf "${GREEN}[+] Adding 'vmware-user-suid-wrapper' to i3 config to enable copy/paste !${RESET}\n"
     if [ "$(ls $HOME/.config/i3/ | grep "config" | head -n 1 )" = "config" ]; then
-        echo "bindsym exec vmware-user-suid-wrapper --no-startup-id" >> $HOME/.config/i3/config
+        echo "exec vmware-user-suid-wrapper --no-startup-id" >> $HOME/.config/i3/config
     else
         printf "${RED}[-] Cannot find i3 config, please check where your config file is placed and edit the script !${RESET}\n"
         exit 1
