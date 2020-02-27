@@ -1,0 +1,290 @@
+#!/usr/bin/env bash
+
+declare -A colors
+_MKDKR_TMP_DIR="${PWD}/.tmp"
+
+_pretty() {
+  colors+=(
+    ["black"]='\e[0;30m'
+    ["red"]='\e[0;31m'
+    ["green"]='\e[0;32m'
+    ["orange"]='\e[0;33m'
+    ["blue"]='\e[0;34m'
+    ["purple"]='\e[0;35m'
+    ["cyan"]='\e[0;36m'
+    ["light_gray"]='\e[0;37m'
+    ["dark_gray"]='\e[1;30m'
+    ["light_red"]='\e[1;31m'
+    ["light_green"]='\e[1;32m'
+    ["yellow"]='\e[1;33m'
+    ["light_blue"]='\e[1;34m'
+    ["light_purple"]='\e[1;35m'
+    ["light_cyan"]='\e[1;36m'
+    ["white"]='\e[1;37m'
+  )
+  key=${1:-white}
+  echo -e "${colors[${key}]}${*:2}\e[0m" >&2
+}
+
+# https://github.com/dylanaraps/pure-bash-bible#generate-a-uuid-v4
+_uuid() {
+  C="89ab"
+
+  for ((N = 0; N < 16; ++N)); do
+    B="$((RANDOM % 256))"
+
+    case "$N" in
+    6) printf '4%x' "$((B % 16))" ;;
+    8) printf '%c%x' "${C:$RANDOM%${#C}:1}" "$((B % 16))" ;;
+
+    3 | 5 | 7 | 9)
+      printf '%02x-' "$B"
+      ;;
+
+    *)
+      printf '%02x' "$B"
+      ;;
+    esac
+  done
+
+  printf '\n'
+}
+
+_image() {
+  docker ps | grep "${1}" | awk '{print $2}'
+}
+
+_remove_running_job() {
+  if [ "$(docker ps | grep job_${MKDKR_JOB_NAME})" != "" ]; then
+    _pretty "purple" "image changed, from: $(_image job_${MKDKR_JOB_NAME}) to: ${IMAGE}"
+    docker rm -f "job_${MKDKR_JOB_NAME}" >&2
+  fi
+}
+
+_branch_or_tag_name() {
+  _BRANCH=""
+  if [ "$GITHUB_ACTIONS" == "true" ]; then
+    _BRANCH="$(echo $GITHUB_REF | cut -d'/' -f3-)"
+  elif [ "$GITLAB_CI" == "true" ]; then
+    _BRANCH="$CI_COMMIT_REF_NAME"
+  elif [ "$JENKINS_URL" != "" ]; then
+    _BRANCH="$GIT_BRANCH"
+  elif [ "$TRAVIS" == "true" ]; then
+    _BRANCH="$TRAVIS_BRANCH"
+  elif [ "$CIRCLECI" == "true" ]; then
+    if [ "$CIRCLE_TAG" != "" ]; then
+      _BRANCH="$CIRCLE_TAG"
+    else
+      _BRANCH="$CIRCLE_BRANCH"
+    fi
+  elif [ "$(git rev-parse --is-inside-work-tree)" == true ]; then
+    _BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+  fi
+  echo "$_BRANCH"
+}
+
+_branch_or_tag_name_slug() {
+  echo "${1}" | sed -E 's/\/|_/-/g' | tr '[:upper:]' '[:lower:]'
+}
+
+_remote_include() {
+  if [ -f mkdkr.csv ]; then
+    declare -a _MKDKR_INCLUDES_LIST=()
+
+    _pretty "orange" "\ninclude\n"
+    while IFS= read -r LINE; do
+      PARAMS=($(echo "$LINE" | tr "," " "))
+      ALIAS="${PARAMS[0]}"
+
+      if [ -z "${PARAMS[1]}" ]; then
+        _pretty "include: needs git path to clone for: ${ALIAS}"
+        exit 1
+      fi
+
+      REPOS="${PARAMS[1]}"
+      CHECKOUT="master"
+      FILE="main.mk"
+
+      if [ "${PARAMS[2]}" ]; then
+        CHECKOUT="${PARAMS[2]}"
+      fi
+
+      if [ "${PARAMS[3]}" ]; then
+        FILE="${PARAMS[3]}"
+      fi
+
+      mkdir -p "${_MKDKR_TMP_DIR}/includes"
+
+      if [ -d "${_MKDKR_TMP_DIR}/includes/${ALIAS}" ]; then
+        _pretty "light_cyan" "update: ${ALIAS}\nrepos: ${REPOS}\ncheckout: ${CHECKOUT}\nfile: ${FILE}"
+        git -C "${_MKDKR_TMP_DIR}/includes/${ALIAS}/" pull --depth "${MKDKR_INCLUDE_CLONE_DEPTH:-1}" origin "$CHECKOUT" >&2
+        git -C "${_MKDKR_TMP_DIR}/includes/${ALIAS}/" reset --hard "origin/${CHECKOUT}" >&2
+      else
+        _pretty "light_cyan" "clone: ${ALIAS}\nrepos: ${REPOS}\ncheckout: ${CHECKOUT}\nfile: ${FILE}"
+        git clone "${REPOS}" --branch "${CHECKOUT}" --depth "${MKDKR_INCLUDE_CLONE_DEPTH:-1}" "${_MKDKR_TMP_DIR}/includes/${ALIAS}" >&2
+      fi
+
+      _MKDKR_INCLUDES_LIST+=("${_MKDKR_TMP_DIR}/includes/${ALIAS}/${FILE}")
+    done < <(grep -v '^ *#' <mkdkr.csv)
+
+    echo "${_MKDKR_INCLUDES_LIST[*]}"
+  fi
+
+}
+
+_header_render() {
+  cat <<EOF
+.EXPORT_ALL_VARIABLES:
+.ONESHELL:
+SHELL = /bin/bash
+
+MKDKR_BRANCH_NAME=$MKDKR_BRANCH_NAME
+MKDKR_BRANCH_NAME_SLUG=$MKDKR_BRANCH_NAME_SLUG
+
+define dkr =
+  . .mkdkr
+  \$(eval MKDKR_JOB_NAME=\$(shell . .mkdkr; _job_uniq_name \$(@)))
+  \$(eval MKDKR_JOB_STDOUT="${_MKDKR_TMP_DIR}/\${MKDKR_JOB_NAME}.log")
+  trap _job_destroy EXIT
+  _pretty "orange" "\nstart: \$(@)\n"
+endef
+
+define stdout =
+  if [ -f \$(MKDKR_JOB_STDOUT) ]; then cat \$(MKDKR_JOB_STDOUT); fi
+endef
+EOF
+}
+
+_header() {
+  if [ -d "${_MKDKR_TMP_DIR}" ]; then
+    find "${_MKDKR_TMP_DIR}" -name "mkdkr_header_*.mk" -type f -mmin +60 -delete
+  else
+    mkdir -p "${_MKDKR_TMP_DIR}"
+  fi
+
+  _MKDKR_INCLUDE="${_MKDKR_TMP_DIR}/mkdkr_header_$(_uuid).mk"
+  _header_render >"${_MKDKR_INCLUDE}"
+
+  echo "${_MKDKR_INCLUDE}"
+}
+
+_job_uniq_name() {
+  if [ -z "${MKDKR_JOB_NAME}" ]; then
+    _MKDKR_JOB_NAME=$(echo "${1}_$(_uuid)" | sed 's/\//_/g')
+    export MKDKR_JOB_NAME="${_MKDKR_JOB_NAME}"
+  fi
+  echo "${MKDKR_JOB_NAME}"
+}
+
+_job_destroy() {
+  ALIVE=$(docker ps | grep "${MKDKR_JOB_NAME}" | awk '{print $1}')
+  if [ "${ALIVE[0]}" != "" ]; then
+    _pretty "cyan" "\ncleanup:"
+    docker ps | grep "${MKDKR_JOB_NAME}" | awk '{print $1}' | xargs -i{} docker rm -f {} >&2
+    if [ -f "${_MKDKR_TMP_DIR}/${MKDKR_JOB_NAME}.log" ]; then
+      rm "${_MKDKR_TMP_DIR}/${MKDKR_JOB_NAME}.log"
+    fi
+  fi
+  _pretty "orange" "\ncompleted:"
+  times
+}
+
+instance:() {
+  OLDIFS=$IFS
+  IFS='⠀' # Braille Pattern Blank (U+2800)
+  IMAGE="${1}"
+  ARGS="${*:2}"
+
+  _remove_running_job
+
+  _pretty "cyan" "\ninstance: ${IMAGE} ${ARGS[*]}"
+
+  SERVICE=$(_image "service_${MKDKR_JOB_NAME}" | sed 's/:.*//g;s/\//_/g')
+  if [ "${SERVICE}" != "" ]; then
+    SERVICES=(--link "service_${MKDKR_JOB_NAME}:${SERVICE}")
+  fi
+
+  docker run --rm -d \
+    -v "${PWD}":"${PWD}" \
+    --workdir "${PWD}" \
+    --entrypoint "" \
+    $ARGS \
+    ${SERVICES[@]} \
+    --name "job_${MKDKR_JOB_NAME}" \
+    "${IMAGE}" sleep "${MKDKR_TTL:-3600}" >&2
+
+  IFS=$OLDIFS
+}
+
+service:() {
+  OLDIFS=$IFS
+  IFS='⠀' # Braille Pattern Blank (U+2800)
+  IMAGE="${1}"
+  ARGS="${*:2}"
+
+  _remove_running_job
+
+  _pretty "cyan" "\nservice: ${IMAGE} ${ARGS[*]}"
+
+  docker run --rm -d \
+    -v "${PWD}":"${PWD}" \
+    --workdir "${PWD}" \
+    $ARGS \
+    --name "service_${MKDKR_JOB_NAME}" \
+    "${IMAGE}" >&2
+
+  IFS=$OLDIFS
+}
+
+dind:() {
+  OLDIFS=$IFS
+  IFS='⠀' # Braille Pattern Blank (U+2800)
+  IMAGE="${1}"
+  ARGS="${*:2}"
+
+  _remove_running_job
+
+  _pretty "cyan" "\ndind: ${IMAGE} ${ARGS[*]}"
+
+  SERVICE=$(_image "service_${MKDKR_JOB_NAME}" | sed 's/:.*//g;s/\//_/g')
+  if [ "${SERVICE}" != "" ]; then
+    SERVICES=(--link "service_${MKDKR_JOB_NAME}:${SERVICE}")
+  fi
+
+  docker run --rm -d \
+    -v "${PWD}":"${PWD}" \
+    --workdir "${PWD}" \
+    --entrypoint "" \
+    $ARGS \
+    --privileged -v /var/run/docker.sock:/var/run/docker.sock \
+    ${SERVICES[@]} \
+    --name "job_${MKDKR_JOB_NAME}" \
+    "${IMAGE}" sleep "${MKDKR_TTL:-3600}" >&2
+
+  IFS=$OLDIFS
+}
+
+run:() {
+  CONTAINER_NAME="job_${MKDKR_JOB_NAME}"
+
+  _pretty "green" "\nrun: ${*}"
+
+  if [ ! -d "${_MKDKR_TMP_DIR}" ]; then
+    mkdir -p "${_MKDKR_TMP_DIR}"
+  fi
+
+  docker exec -i ${CONTAINER_NAME} ${MKDKR_SHELL:-sh} -c "$*" | tee "${_MKDKR_TMP_DIR}/${MKDKR_JOB_NAME}.log"
+  EXIT_CODE="${PIPESTATUS[0]}"
+  if [ "${EXIT_CODE}" != "0" ]; then
+    _job_destroy
+    exit "${EXIT_CODE}"
+  fi
+}
+
+if [ "$1" == "init" ]; then
+
+  MKDKR_BRANCH_NAME="$(_branch_or_tag_name)"
+  MKDKR_BRANCH_NAME_SLUG="$(_branch_or_tag_name_slug ${MKDKR_BRANCH_NAME})"
+
+  echo "$(_header) $(_remote_include)"
+fi
