@@ -26,7 +26,7 @@ function kalilinux {
 
 function archlinux {
     printf "${YELLOW}[!]${RESET} Now running pacman to install 'open-vm-tools' package\n "
-    sudo pacman -Sy open-vm-tools --noconfirm
+    sudo pacman -Syu open-vm-tools --noconfirm
     printf "\n"
     start_services
 }
